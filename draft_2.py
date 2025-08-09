@@ -1,6 +1,7 @@
 import pygame
 import sys
 from pygame.math import Vector2
+import random
 
 pygame.init()
 pygame.display.set_caption("Tiny Town — Enter Buildings")
@@ -13,6 +14,9 @@ FONT = pygame.font.SysFont("consolas", 18)
 TILE_SIZE = 64
 PLAYER_SPEED = 240
 INTERACT_DISTANCE = 48
+WORLD_COLS = 80
+WORLD_ROWS = 80
+RNG_SEED = 42
 
 # Colors
 BG_COLOR = (150, 200, 255)
@@ -23,6 +27,9 @@ NPC_COLOR = (100, 100, 255)
 DIALOG_BG = (20, 20, 20)
 DIALOG_TEXT = (230, 230, 230)
 INTERIOR_COLOR = (230, 230, 180)
+ROAD_COLOR = (170, 170, 170)
+TREE_COLOR = (80, 160, 80)
+PARK_COLOR = (120, 200, 120)
 
 # ---------- TILE TYPES ----------
 GROUND = 0
@@ -60,20 +67,69 @@ class Tile:
         self.rect = rect
 
 # ---------- WORLD MAP ----------
-# Create a larger 40x40 grid with various tile types
-tile_map = [
-    [GROUND, GROUND, GROUND, GROUND, ROAD, ROAD, GROUND, TREE, TREE, GROUND, BUILDING, BUILDING, GROUND, GROUND, GROUND, PARK, PARK, GROUND, GROUND, GROUND, NPC_SPAWN],
-    [GROUND, GROUND, GROUND, ROAD, ROAD, ROAD, GROUND, GROUND, GROUND, GROUND, GROUND, BUILDING, BUILDING, GROUND, GROUND, PARK, PARK, GROUND, TREE, GROUND, NPC_SPAWN],
-    [GROUND, GROUND, GROUND, ROAD, ROAD, ROAD, GROUND, GROUND, GROUND, GROUND, GROUND, GROUND, GROUND, GROUND, TREE, TREE, GROUND, GROUND, GROUND, GROUND, NPC_SPAWN],
-    [GROUND, GROUND, GROUND, GROUND, GROUND, ROAD, GROUND, TREE, GROUND, GROUND, GROUND, ROAD, ROAD, GROUND, TREE, GROUND, GROUND, GROUND, GROUND, GROUND, GROUND],
-    [GROUND, BUILDING, BUILDING, GROUND, GROUND, GROUND, TREE, GROUND, TREE, GROUND, ROAD, ROAD, BUILDING, GROUND, GROUND, GROUND, GROUND, GROUND, TREE, GROUND, EXIT],
-    [GROUND, BUILDING, GROUND, GROUND, GROUND, TREE, ROAD, GROUND, GROUND, GROUND, ROAD,  TREE, NPC_SPAWN],
-]
+
+def generate_town_map(cols, rows):
+    rng = random.Random(RNG_SEED)
+    grid = [[GROUND for _ in range(cols)] for _ in range(rows)]
+
+    block = 8
+    # Roads grid
+    for r in range(rows):
+        for c in range(cols):
+            if r % block == 0 or c % block == 0:
+                grid[r][c] = ROAD
+
+    # Parks in some blocks
+    for r in range(4, rows, 16):
+        for c in range(4, cols, 16):
+            for rr in range(r, min(r + 3, rows)):
+                for cc in range(c, min(c + 3, cols)):
+                    grid[rr][cc] = PARK
+
+    # Buildings lining roads (inside blocks)
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r][c] == GROUND:
+                near_horiz_road = (r % block == 1) and (c % block not in (0, block - 1))
+                near_vert_road = (c % block == 1) and (r % block not in (0, block - 1))
+                if (near_horiz_road or near_vert_road) and rng.random() < 0.65:
+                    grid[r][c] = BUILDING
+
+    # Trees sprinkled on remaining ground
+    tree_count = (cols * rows) // 30
+    for _ in range(tree_count):
+        rr = rng.randrange(rows)
+        cc = rng.randrange(cols)
+        if grid[rr][cc] == GROUND:
+            grid[rr][cc] = TREE
+
+    # Entrance and Exit
+    grid[1][1] = ENTRANCE
+    grid[rows - 2][cols - 2] = EXIT
+
+    # NPC spawn points on random roads
+    spawn_added = 0
+    target_spawns = max(10, (cols * rows) // 200)
+    attempts = 0
+    while spawn_added < target_spawns and attempts < cols * rows * 2:
+        attempts += 1
+        rr = rng.randrange(rows)
+        cc = rng.randrange(cols)
+        if grid[rr][cc] == ROAD:
+            grid[rr][cc] = NPC_SPAWN
+            spawn_added += 1
+
+    return grid
+
+# Build a large generated map
+tile_map = generate_town_map(WORLD_COLS, WORLD_ROWS)
 
 # ---------- TILE INITIALIZATION ----------
 tiles = []
 tile_width = TILE_SIZE
 tile_height = TILE_SIZE
+world_width = len(tile_map[0]) * tile_width
+world_height = len(tile_map) * tile_height
 
 for row_idx, row in enumerate(tile_map):
     for col_idx, tile_type in enumerate(row):
@@ -86,6 +142,12 @@ for row_idx, row in enumerate(tile_map):
 player = {"rect": pygame.Rect(60, 100, 36, 52), "vel": Vector2(0, 0), "name": "You"}
 active_npc = None
 dialog_open = False
+
+# Place player at entrance if present
+for t in tiles:
+    if t.tile_type == ENTRANCE:
+        player["rect"].center = t.rect.center
+        break
 
 # ---------- NPC SETUP ----------
 npc_list = []
@@ -112,18 +174,29 @@ def get_camera_offset(player_rect, w, h):
     return Vector2(cx, cy)
 
 # ---------- DRAW FUNCTIONS ----------
-def draw_world():
+
+def draw_world(offset):
+    view_rect = pygame.Rect(int(offset.x), int(offset.y), WIDTH, HEIGHT)
     for tile in tiles:
+        if not tile.rect.colliderect(view_rect):
+            continue
+        draw_rect = tile.rect.move(-offset.x, -offset.y)
         if tile.tile_type == GROUND:
-            pygame.draw.rect(screen, GROUND_COLOR, tile.rect)
+            pygame.draw.rect(screen, GROUND_COLOR, draw_rect)
         elif tile.tile_type == BUILDING:
-            pygame.draw.rect(screen, BUILDING_COLOR, tile.rect)
+            pygame.draw.rect(screen, BUILDING_COLOR, draw_rect)
         elif tile.tile_type == NPC_SPAWN:
-            pygame.draw.rect(screen, NPC_COLOR, tile.rect)
+            pygame.draw.rect(screen, NPC_COLOR, draw_rect)
         elif tile.tile_type == ENTRANCE:
-            pygame.draw.rect(screen, (255, 255, 0), tile.rect)
+            pygame.draw.rect(screen, (255, 255, 0), draw_rect)
         elif tile.tile_type == EXIT:
-            pygame.draw.rect(screen, (0, 255, 0), tile.rect)
+            pygame.draw.rect(screen, (0, 255, 0), draw_rect)
+        elif tile.tile_type == ROAD:
+            pygame.draw.rect(screen, ROAD_COLOR, draw_rect)
+        elif tile.tile_type == TREE:
+            pygame.draw.rect(screen, TREE_COLOR, draw_rect)
+        elif tile.tile_type == PARK:
+            pygame.draw.rect(screen, PARK_COLOR, draw_rect)
 
 def draw_dialog(surface, npc):
     box_h = 140
@@ -192,12 +265,17 @@ while running:
     player["rect"].x += int(move.x)
     player["rect"].y += int(move.y)
 
+    # Clamp to world bounds
+    player["rect"].x = clamp(player["rect"].x, 0, world_width - player["rect"].width)
+    player["rect"].y = clamp(player["rect"].y, 0, world_height - player["rect"].height)
+
     # ---------- DRAW ----------
     screen.fill(BG_COLOR)
-    draw_world()
+    offset = get_camera_offset(player["rect"], world_width, world_height)
+    draw_world(offset)
 
     # Draw player
-    pygame.draw.rect(screen, PLAYER_COLOR, player["rect"])
+    pygame.draw.rect(screen, PLAYER_COLOR, player["rect"].move(-offset.x, -offset.y))
 
     if dialog_open and active_npc is not None:
         draw_dialog(screen, active_npc)
